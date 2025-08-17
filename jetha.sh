@@ -1,8 +1,8 @@
 #!/bin/bash
 
-<< disclaimer
+<< comment
 This is just for infotainment purpose
-disclaimer
+comment
 
 # This is function definition
 
