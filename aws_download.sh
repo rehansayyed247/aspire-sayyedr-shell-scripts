@@ -7,10 +7,11 @@
 ########################
 # Global Variables
 ########################
+DOWNLOAD_DIR=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/STUDY_DOWNLOAD
 LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/aws_download.log
 ERR_LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/aws_download_err.log
 IAM_USER=srv_download
-S3_BUCKET=s3://sayyedr-archive
+S3_BUCKET=s3://sayyedr-archive/
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 ########################
@@ -34,7 +35,6 @@ rotate_logs() {
 	if [ -f "$LOG_FILE" ]; then
 	mv "$LOG_FILE" "$LOG_FILE-$TIMESTAMP.log"
 	fi
-	exec > >(tee -a "$LOG_FILE") 2>&1
 }
 
 ########################
@@ -115,8 +115,32 @@ check_validations() {
         log_info "File name is valid (starts with MK or V)."
     else
         log_error "Invalid file name: $filename"
+	send_mail
+	exit 1
     fi
 }
+
+
+########################
+# Download from AWS
+#######################
+aws_download() {
+log_info "Running the download of file"
+
+if [ -d "$DOWNLOAD_DIR" ]; then
+	log_info "Study Folder available"
+else
+	log_error "No Study Folder, creating one..."
+        mkdir "$DOWNLOAD_DIR"
+fi
+
+if aws s3 cp "$S3_BUCKET" "$DOWNLOAD_DIR" --recursive >>"$LOG_FILE" 2>>"$ERR_LOG_FILE"; then
+	log_info "Download Succeeded"
+else
+	log_error "Download Failed"
+fi
+}
+
 
 
 ########################
@@ -137,4 +161,5 @@ check_aws_cli
 check_aws_connectivity
 list_buckets
 check_validations
+aws_download
 # send_mail   # Uncomment when implemented
