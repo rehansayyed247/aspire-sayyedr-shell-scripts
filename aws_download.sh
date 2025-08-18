@@ -1,96 +1,140 @@
 #!/bin/bash
+#
+# Sayyedr Project
+# Script to download files from AWS S3 with validations
+#
 
-<< Task
-Sayyedr Project
-To download files from AWS
-with validations
-Task
-
-# Global Variables Declare
-CRON_LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/cron_job.log
+########################
+# Global Variables
+########################
+LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/aws_download.log
+ERR_LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/aws_download_err.log
 IAM_USER=srv_download
 S3_BUCKET=s3://sayyedr-archive
-LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/aws_download.log
-S3_LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/s3_file.log
-ERR_LOG_FILE=/mnt/data/Aspire/aspire-sayyedr-shell-scripts/aws_download_err.log
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
-# Function to check if cron job is running or not
+########################
+# Logging Functions
+########################
+log_with_time() {
+    while IFS= read -r line; do
+        printf "[%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$line"
+    done
+}
+
+log_info() {
+    echo "$*" | log_with_time | tee -a "$LOG_FILE"
+}
+
+log_error() {
+    echo "ERROR: $*" | log_with_time | tee -a "$ERR_LOG_FILE" >&2
+}
+
+rotate_logs() {
+	if [ -f "$LOG_FILE" ]; then
+	mv "$LOG_FILE" "$LOG_FILE-$TIMESTAMP.log"
+	fi
+	exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
+########################
+# Function to check if cron job is running
+########################
 check_cron() {
-echo "Checking if a cron job for this script is running or not..."
-ps -ef | grep "/bin/bash $0"|grep -v grep > $CRON_LOG_FILE
-if [ -f $CRON_LOG_FILE ]; then
-	echo "Cron job log file exist."
-else
-	echo "No Cron job log file exist...creating one.."
-	touch $CRON_LOG_FILE
-	echo "Created cron job log file"
-fi
-	ps -ef | grep "/bin/bash $0" >> /dev/null
-	CNT=$(cat $CRON_LOG_FILE | wc -l)
-if [ $CNT -gt 1 ]; then
-	echo " ERROR: Process Already Running!!!!. So Aborting Job For " "$0" date | tee -a $CRON_LOG >> $ERR_LOG_FILE
-	exit 1
-else
-	echo "No running cron job found for this script. Hence proceeding further..."
-fi
+    LOCKFILE="/tmp/$(basename $0).lock"
+
+    exec 200>"$LOCKFILE"   # Open file descriptor 200 for locking
+
+    if ! flock -n 200; then
+        log_error "Another instance of $0 is already running. Aborting!"
+        exit 1
+    fi
+
+    log_info "No duplicate cron job found. Proceeding further..."
 }
 
-# Function to check if AWS CLI is installed or not
+
+########################
+# Function to check if AWS CLI is installed
+########################
 check_aws_cli() {
-echo "Checking if AWS CLI is installed or not..."
-aws --version >> /dev/null
-if [ $0 ]; then
-	echo "AWS CLI is installed"
-else
-	echo "ERROR: AWS CLI is not installed. Please install it." >> $ERR_LOG_FILE
-	exit 1
-fi
+    log_info "Checking if AWS CLI is installed..."
+
+    if ! command -v aws >/dev/null 2>&1; then
+        log_error "AWS CLI is not installed. Please install it."
+        exit 1
+    else
+        log_info "AWS CLI is installed: $(aws --version 2>&1)"
+    fi
 }
 
-# Function to check AWS connectivity to S3 bucket
+
+########################
+# Function to check AWS connectivity
+########################
 check_aws_connectivity() {
-echo "Checking AWS Connectivity..."
-aws iam get-user --user-name $IAM_USER > $LOG_FILE
-if [ ! $0 ]; then
-	echo "There is a problem in AWS Connectivity, Suggest to update AWS Credentials" >> $ERR_LOG_FILE
-	exit 1
-else
-	echo "AWS Account is Configured"
-	iam_user=$(grep "UserName" $LOG_FILE | sed -n 's/.*"UserName": *"\([^"]*\)".*/\1/p')
-	echo "IAM User Name: $iam_user"
-fi
+    log_info "Checking AWS connectivity for user: $IAM_USER"
+
+    if ! aws iam get-user --user-name "$IAM_USER" > /tmp/aws_user.json 2>>"$ERR_LOG_FILE"; then
+        log_error "AWS connectivity failed. Suggest updating AWS credentials."
+        exit 1
+    else
+        log_info "AWS account is configured."
+        iam_user=$(grep '"UserName"' /tmp/aws_user.json | sed -n 's/.*"UserName": *"\([^"]*\)".*/\1/p')
+        log_info "IAM User Name: $iam_user"
+    fi
 }
 
+
+########################
 # List buckets in the AWS Account
+########################
 list_buckets() {
-aws s3 ls $S3_BUCKET > $S3_LOG_FILE
-if [ -f $S3_LOG_FILE ]; then
-	echo "S3 Log file exist"
-else
-	echo "Creating log file..."
-	touch $S3_LOG_FILE
-fi
+    log_info "Listing S3 bucket contents for $S3_BUCKET"
+
+    if aws s3 ls "$S3_BUCKET" >>"$LOG_FILE" 2>>"$ERR_LOG_FILE"; then
+        log_info "S3 bucket listed successfully."
+    else
+        log_error "Failed to list S3 bucket: $S3_BUCKET"
+        exit 1
+    fi
 }
 
+
+########################
 # Validations
+########################
 check_validations() {
-filename=$(awk -F ' ' '{print $4}' $S3_LOG_FILE)
-if [[ $filename == MK* || $filename == V* ]]; then
-        echo "File name is valid starting with MK or V"
-else
-        echo "Invalid file name: $filename"
-fi
+    log_info "Validating downloaded file names..."
+
+    # Get the last file name from log (field 4 or 5 depending on aws s3 ls output)
+    filename=$(grep -E '\.tgz$' "$LOG_FILE" | awk '{print $4}' | tail -n 1)
+
+    if [[ "$filename" == MK* || "$filename" == V* ]]; then
+        log_info "File name is $filename"
+        log_info "File name is valid (starts with MK or V)."
+    else
+        log_error "Invalid file name: $filename"
+    fi
 }
 
-# Email
+
+########################
+# Email (placeholder)
+########################
 send_mail() {
-	echo "Sending Email"
-	#Add your logic here
+    log_info "Sending email notification..."
+    # TODO: Add mail command or SES integration here
 }
 
-# Function Call: Add all your function call here
+
+########################
+# Main Script Execution
+########################
 check_cron
+rotate_logs
 check_aws_cli
 check_aws_connectivity
 list_buckets
 check_validations
+# send_mail   # Uncomment when implemented
